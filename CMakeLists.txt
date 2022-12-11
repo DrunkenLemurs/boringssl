@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.13)
 
 # Defer enabling C and CXX languages.
 project(BoringSSL NONE)
@@ -570,40 +570,47 @@ if(USE_CUSTOM_LIBCXX)
   install(TARGETS libcxx EXPORT OpenSSLTargets DESTINATION ${CMAKE_INSTALL_LIBDIR})
 endif()
 
-# Add minimal googletest targets. The provided one has many side-effects, and
-# googletest has a very straightforward build.
-add_library(boringssl_gtest third_party/googletest/src/gtest-all.cc)
-target_include_directories(boringssl_gtest PRIVATE third_party/googletest)
+set(BORINGSSL_TESTS ON CACHE BOOL "")
+if(BORINGSSL_TESTS)
+  # Add minimal googletest targets. The provided one has many side-effects, and
+  # googletest has a very straightforward build.
+  add_library(boringssl_gtest third_party/googletest/src/gtest-all.cc)
+  target_include_directories(boringssl_gtest PRIVATE third_party/googletest)
 
-include_directories(third_party/googletest/include)
+  include_directories(third_party/googletest/include)
 
-# Declare a dummy target to build all unit tests. Test targets should inject
-# themselves as dependencies next to the target definition.
-add_custom_target(all_tests)
+  # Declare a dummy target to build all unit tests. Test targets should inject
+  # themselves as dependencies next to the target definition.
+  add_custom_target(all_tests)
 
-# On Windows, CRYPTO_TEST_DATA is too long to fit in command-line limits.
-# TODO(davidben): CMake 3.12 has a list(JOIN) command. Use that when we've
-# updated the minimum version.
-set(EMBED_TEST_DATA_ARGS "")
-foreach(arg ${CRYPTO_TEST_DATA})
-  set(EMBED_TEST_DATA_ARGS "${EMBED_TEST_DATA_ARGS}${arg}\n")
-endforeach()
-file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/embed_test_data_args.txt"
-     "${EMBED_TEST_DATA_ARGS}")
+  # On Windows, CRYPTO_TEST_DATA is too long to fit in command-line limits.
+  # TODO(davidben): CMake 3.12 has a list(JOIN) command. Use that when we've
+  # updated the minimum version.
+  set(EMBED_TEST_DATA_ARGS "")
+  foreach(arg ${CRYPTO_TEST_DATA})
+    set(EMBED_TEST_DATA_ARGS "${EMBED_TEST_DATA_ARGS}${arg}\n")
+  endforeach()
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/embed_test_data_args.txt"
+       "${EMBED_TEST_DATA_ARGS}")
 
-add_custom_command(
-  OUTPUT crypto_test_data.cc
-  COMMAND ${GO_EXECUTABLE} run util/embed_test_data.go -file-list
-          "${CMAKE_CURRENT_BINARY_DIR}/embed_test_data_args.txt" >
-          "${CMAKE_CURRENT_BINARY_DIR}/crypto_test_data.cc"
-  DEPENDS util/embed_test_data.go ${CRYPTO_TEST_DATA}
-  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  add_custom_command(
+    OUTPUT crypto_test_data.cc
+    COMMAND ${GO_EXECUTABLE} run util/embed_test_data.go -file-list
+            "${CMAKE_CURRENT_BINARY_DIR}/embed_test_data_args.txt" >
+            "${CMAKE_CURRENT_BINARY_DIR}/crypto_test_data.cc"
+    DEPENDS util/embed_test_data.go ${CRYPTO_TEST_DATA}
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
-add_library(crypto_test_data OBJECT crypto_test_data.cc)
+  add_library(crypto_test_data OBJECT crypto_test_data.cc)
+endif()
 
 add_subdirectory(crypto)
 add_subdirectory(ssl)
-add_subdirectory(ssl/test)
+
+if(BORINGSSL_TESTS)
+  add_subdirectory(ssl/test)
+endif()
+
 add_subdirectory(tool)
 add_subdirectory(util/fipstools)
 add_subdirectory(util/fipstools/acvp/modulewrapper)
@@ -634,31 +641,32 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set(HANDSHAKER_ARGS "-handshaker-path" $<TARGET_FILE:handshaker>)
 endif()
 
-if(FIPS)
-  add_custom_target(
-    acvp_tests
-    COMMAND ${GO_EXECUTABLE} build -o ${CMAKE_BINARY_DIR}/acvptool
-            boringssl.googlesource.com/boringssl/util/fipstools/acvp/acvptool
-    COMMAND ${GO_EXECUTABLE} build -o ${CMAKE_BINARY_DIR}/testmodulewrapper
-            boringssl.googlesource.com/boringssl/util/fipstools/acvp/acvptool/testmodulewrapper
-    COMMAND cd util/fipstools/acvp/acvptool/test &&
-            ${GO_EXECUTABLE} run check_expected.go
-            -tool ${CMAKE_BINARY_DIR}/acvptool
-            -module-wrappers modulewrapper:$<TARGET_FILE:modulewrapper>,testmodulewrapper:${CMAKE_BINARY_DIR}/testmodulewrapper
-            -tests tests.json
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    DEPENDS modulewrapper
-    USES_TERMINAL)
+if(BORINGSSL_TESTS)
+  if(FIPS)
+    add_custom_target(
+      acvp_tests
+      COMMAND ${GO_EXECUTABLE} build -o ${CMAKE_BINARY_DIR}/acvptool
+              boringssl.googlesource.com/boringssl/util/fipstools/acvp/acvptool
+      COMMAND ${GO_EXECUTABLE} build -o ${CMAKE_BINARY_DIR}/testmodulewrapper
+              boringssl.googlesource.com/boringssl/util/fipstools/acvp/acvptool/testmodulewrapper
+      COMMAND cd util/fipstools/acvp/acvptool/test &&
+              ${GO_EXECUTABLE} run check_expected.go
+              -tool ${CMAKE_BINARY_DIR}/acvptool
+              -module-wrappers modulewrapper:$<TARGET_FILE:modulewrapper>,testmodulewrapper:${CMAKE_BINARY_DIR}/testmodulewrapper
+              -tests tests.json
+      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+      DEPENDS modulewrapper
+      USES_TERMINAL)
+
+    add_custom_target(
+      fips_specific_tests_if_any
+      DEPENDS acvp_tests
+    )
+  else()
+    add_custom_target(fips_specific_tests_if_any)
+  endif()
 
   add_custom_target(
-    fips_specific_tests_if_any
-    DEPENDS acvp_tests
-  )
-else()
-  add_custom_target(fips_specific_tests_if_any)
-endif()
-
-add_custom_target(
     run_tests
     COMMAND ${GO_EXECUTABLE} run util/all_tests.go -build-dir
             ${CMAKE_BINARY_DIR}
@@ -668,6 +676,7 @@ add_custom_target(
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     DEPENDS all_tests bssl_shim handshaker fips_specific_tests_if_any
     USES_TERMINAL)
+endif()
 
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
